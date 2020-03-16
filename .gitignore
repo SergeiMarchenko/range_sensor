@@ -1,2 +1,7 @@
+#ignore everything
+*
+
+#except...
 !*.v
+!.gitignore
 
