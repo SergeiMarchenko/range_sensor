@@ -1,15 +1,20 @@
-module rangesensor(input wire clk,
-                   input wire echo,
-                   output wire trigger,
-                   output wire [6:0] segments,
-                   output wire [3:0] digit_num
+module rangesensor #(parameter DEVICES = 2)
+(
+                   input  wire                   clk,
+                   input  wire                   rx, 
+                   input  wire [DEVICES-1:0]     echo,
+                   output wire                   tx,
+                   output wire [DEVICES-1:0]     trigger,
+                   output wire [DEVICES*7-1:0]   segments,
+                   output wire [DEVICES*4-1:0]   digit_num
 );
 
-wire[3:0] digit1;
-wire[3:0] digit2;
-wire[3:0] digit3;
-wire[3:0] digit4;
+wire[DEVICES*4-1:0] digit1;
+wire[DEVICES*4-1:0] digit2;
+wire[DEVICES*4-1:0] digit3;
+wire[DEVICES*4-1:0] digit4;
 
+wire[DEVICES*8-1:0] range;
 reg rst;
 reg [3:0]rst_delay = 0;
 always @(posedge clk)
@@ -17,32 +22,65 @@ always @(posedge clk)
  
 always @*
   rst = ~rst_delay[3];
-  
-ranging_module pulse_num(clk, echo, rst, trigger, digit1, digit2, digit3, digit4);
-indicator indicator(clk, digit1, digit2, digit3, digit4, segments, digit_num);         
+
+
+
+uart #(.DEVICES(DEVICES)) uart_inst(
+                           .clk(clk),
+                           .rx(rx), 
+                           .tx(tx),
+                           .data_send(range));
+
+genvar i;
+generate 
+    for (i = 0; i < DEVICES; i = i + 1) begin : loopname
+      ranging_module pulse_num(clk,
+                               echo[i],
+                               rst,
+                               trigger[i],
+                               digit1[(i+1)*4-1:i*4],
+                               digit2[(i+1)*4-1:i*4],
+                               digit3[(i+1)*4-1:i*4],
+                               digit4[(i+1)*4-1:i*4],
+                               range[(i+1)*8-1:i*8]);
+                               
+      indicator indicator(clk,
+                          digit1[(i+1)*4-1:i*4],
+                          digit2[(i+1)*4-1:i*4],
+                          digit3[(i+1)*4-1:i*4],
+                          digit4[(i+1)*4-1:i*4],
+                          segments[(i+1)*7-1:i*7],
+                          digit_num[(i+1)*4-1:i*4]);
+    end
+endgenerate  
+//ranging_module pulse_num(clk, echo, rst, trigger, digit1, digit2, digit3, digit4);
+//indicator indicator(clk, digit1, digit2, digit3, digit4, segments, digit_num);         
 endmodule
 
 
-module ranging_module(input wire clk,
-                    input wire echo,
-                    input wire rst,
-                    output reg trigger,
-                    output wire[3:0] digit1,
+module ranging_module(
+                    input wire       clk,
+                    input wire       echo,
+                    input wire       rst,
+                    output reg       trigger,
+                    output wire      digit1,
                     output wire[3:0] digit2,
                     output wire[3:0] digit3,
-                    output wire[3:0] digit4
+                    output wire[3:0] digit4,
+                    output wire[7:0] range
 );
 
-parameter [1:0] START = 2'b00,
-                TRIG = 2'b01,
+parameter [1:0] START          = 2'b00,
+                TRIG           = 2'b01,
                 ECHO_LISTENING = 2'b11,
-                ECHO_COUNT = 2'b10; 
-
+                ECHO_COUNT     = 2'b10;
+               
 reg[1:0] state;
 reg[26:0] counter;
-reg[23:0] pulse_width;
-reg[23:0] pulse_counter;
-reg enable_count;
+reg[7:0] pulse_width;
+reg[8:0] pulse_counter;
+reg[7:0] cm_counter;
+reg       enable_count;
 
 
 reg [8:0] clock_reg2;
@@ -75,13 +113,20 @@ initial cnt4 = 4'd0;
 
 always @(posedge clk)
 begin
-   if (rst)
-      pulse_counter <= 'b0;
-   else if (enable_count == 1'b1)
+   if (rst) begin
+      pulse_counter <= 1'b0;
+      cm_counter <= 1'b0;
+   end
+   else if (enable_count == 1'b1) begin
       pulse_counter <= pulse_counter + 1'b1;
-   else 
+      if(pulse_counter == 9'b1_0010_0100) // 1 cm
+         cm_counter <= cm_counter + 1'b1;
+   end
+   else begin
       pulse_counter <= 'b0;
-
+      cm_counter <= 1'b0;
+   end
+   
    if(rst)
       begin
          counter <= 1'b0;
@@ -113,27 +158,27 @@ begin
       if(counter == 0)
          begin
             trigger <= 1'b0;
-            counter <= 16'b1100_0011_0101_0000;
-            if(echo == 1)
+            if(prev_echo == 1'b0 && echo == 1'b1)
             begin
-               counter <= 22'b100_1100_0100_1101_1010_0000;
+               counter <= 23'b100_1100_0100_1101_1010_0000;
                state <= ECHO_COUNT;
             end
-              else if(counter == 0)
-               state <= START;
          end
-      end
+   end
+      
+      
   ECHO_COUNT:
    begin
       enable_count <= 1'b1;
-      if(echo == 0)
+      if(prev_echo == 1'b1 && echo == 1'b0)
          begin
-            pulse_width <= pulse_counter;
+            pulse_width <= cm_counter;
             state <= START;
          end
       else if(counter == 0)
          state <= START;
-   end
+   end  
+   
   default:
    begin
       enable_count <= 1'b0;
@@ -196,6 +241,7 @@ assign digit2 = digit2_reg;
 assign digit3 = digit3_reg;
 assign digit4 = digit4_reg;
 
+assign range = pulse_width;
 endmodule
 
 
@@ -226,7 +272,7 @@ reg[3:0] digit_num_reg;
 initial digit_num_reg = 4'b0111;
 assign digit_num = digit_num_reg;
 
-wire [3:0] digits[4];
+wire [3:0] digits[4:0];
 
 assign digits[0] = digit1;
 assign digits[1] = digit2;
@@ -265,9 +311,9 @@ always @ (posedge clock) begin
     end
 end
 
+reg[2:0] i;
 always @ (posedge clock)
 begin
-        reg [2:0] i;
         for (i=1'b0; i<3'd4; i=i+1'b1) begin
             if (!digit_num_reg[i]) begin
                data <= digits[i];
